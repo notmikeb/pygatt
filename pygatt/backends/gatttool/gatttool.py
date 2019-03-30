@@ -87,7 +87,7 @@ class GATTToolReceiver(threading.Thread):
                 'patterns': [r'value: .*? \r']
             },
             'value/descriptor': {
-                'patterns': [r'value/descriptor: .*? \r']
+                'patterns': [r'value/descriptor: .*? \r', r'Error: .*?read']
             },
             'discover': {
                 'patterns': [
@@ -97,6 +97,7 @@ class GATTToolReceiver(threading.Thread):
                     'uuid: ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]'
                     '{4}-[0-9a-f]{12})\r\n',  # noqa
                 ]
+                # error Error: Read characteristics by UUID failed: Attribute can't be read
             },
             'connect': {
                 'patterns': [r'Connection successful.*\[LE\]>']
@@ -122,13 +123,14 @@ class GATTToolReceiver(threading.Thread):
         log.info('Running...')
         while self._parent_aliveness.is_set():
             try:
-                event_index = self._connection.expect(patterns, timeout=.5)
+                event_index = self._connection.expect(patterns, timeout=1.5)
             except pexpect.TIMEOUT:
                 continue
             except (NotConnectedError, pexpect.EOF):
                 self._event_vector["disconnected"]["event"].set()
                 break
             event = events[event_index]
+            print("day got event_index:'{}' event:'{}'".format(event_index, repr(event)[:60]))
             event["before"] = self._connection.before
             event["after"] = self._connection.after
             event["match"] = self._connection.match
@@ -150,7 +152,8 @@ class GATTToolReceiver(threading.Thread):
         """
         Wait for event to be trigerred
         """
-        if not self._event_vector[event]["event"].wait(timeout):
+        if not self._event_vector[event]["event"].wait(timeout*3):
+            print("wait event:{} but timeout:{}".format(event, timeout))
             raise NotificationTimeout()
 
     def register_callback(self, event, callback):
@@ -218,6 +221,7 @@ class GATTToolBackend(BLEBackend):
         send a raw command to gatttool
         """
         with self._send_lock:
+            print("day sendline '{}'".format(command))
             self._con.sendline(command)
 
     def supports_unbonded(self):
@@ -429,6 +433,7 @@ class GATTToolBackend(BLEBackend):
 
     def _save_charecteristic_callback(self, event):
         match = event["match"]
+        print("day _save_char match:'{}'".format( repr(match)[:80]))
         try:
             value_handle = int(match.group(2), 16)
             char_uuid = match.group(3).strip().decode('ascii')
@@ -441,6 +446,7 @@ class GATTToolBackend(BLEBackend):
                 value_handle
             )
         except AttributeError:
+            print("day has a AttributeError")
             pass
 
     @at_most_one_device
@@ -519,10 +525,15 @@ class GATTToolBackend(BLEBackend):
         :return: bytearray of result.
         :rtype: bytearray
         """
-        with self._receiver.event("value", timeout=timeout):
+        try:
+          with self._receiver.event("value", timeout=timeout):
             self.sendline('char-read-uuid %s' % uuid)
-        rval = self._receiver.last_value("value", "after").split()[1:]
-        return bytearray([int(x, 16) for x in rval])
+          rval = self._receiver.last_value("value", "after").split()[1:]
+          return bytearray([int(x, 16) for x in rval])
+        except:
+          import traceback
+          traceback.print_exc()
+          return b''
 
     @at_most_one_device
     def char_read_handle(self, handle, timeout=4):
